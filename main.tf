@@ -4,16 +4,28 @@ terraform {
       source = "yandex-cloud/yandex"
       version = "0.97.0"
     }
+
+    datadog = {
+      source = "DataDog/datadog"
+      version = "3.29.0"
+    }
   }
 }
 
-variable "secret_token" {}
-
+variable "yc_token" {}
 provider "yandex" {
-  token  = var.secret_token
+  token  = var.yc_token
   cloud_id = "b1gtk8bi8ed21l2l3aui"
   folder_id = "b1gv4ctc2qlvoraa4gig"
   zone = "ru-central1-a"
+}
+
+variable "datadog_api_key" { }
+variable "datadog_app_key" { }
+provider "datadog" {
+  api_key = var.datadog_api_key
+  app_key = var.datadog_app_key
+  api_url = "https://api.datadoghq.eu/"
 }
 
 
