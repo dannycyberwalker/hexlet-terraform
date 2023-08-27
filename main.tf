@@ -12,7 +12,9 @@ terraform {
   }
 }
 
-variable "yc_token" {}
+
+
+variable "yc_token" { sensitive = true }
 provider "yandex" {
   token  = var.yc_token
   cloud_id = "b1gtk8bi8ed21l2l3aui"
@@ -20,8 +22,8 @@ provider "yandex" {
   zone = "ru-central1-a"
 }
 
-variable "datadog_api_key" { }
-variable "datadog_app_key" { }
+variable "datadog_api_key" { sensitive = true }
+variable "datadog_app_key" { sensitive = true }
 provider "datadog" {
   api_key = var.datadog_api_key
   app_key = var.datadog_app_key
@@ -29,9 +31,9 @@ provider "datadog" {
 }
 
 
-resource "yandex_compute_instance" "vm-1" {
+resource "yandex_compute_instance" "dev1" {
 
-  name                      = "dev3"
+  name                      = "dev1"
   allow_stopping_for_update = true
   platform_id               = "standard-v3"
   zone                      = "ru-central1-a"
@@ -48,22 +50,150 @@ resource "yandex_compute_instance" "vm-1" {
   }
 
   network_interface {
-    subnet_id = "${yandex_vpc_subnet.subnet-1.id}"
+    subnet_id = yandex_vpc_subnet.main_subnet.id
     nat       = true
   }
 
   metadata = {
-    ssh-keys = "danny:ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCYDTxx/Luo3BCKBCKsD93Rez1T9etSqZ2/LkqX3geqJX/XiXNrndyPE6qTT91YSjIGZU4mgksspSFuHvscksI3LVwwbtJKkeD9FEX9cVe3w16jvry/ln/aF62p2apvim3GIVhm5vktInYlcxT8mxEbhyl1nydT8eBrtP/85/oEDqEx07uPpi1/xnIv/yUr95y4Np7vseRiUSgojTdKTID0ojmg4Qkv0GFE1V3o9nXGLIZGRAVgILqg4QyiVtkHMW5QyaFC8VVMy47fDd5higQTbv/a3njcuvoxRj7yRa6oxAkAMs/Ne+tJ2ANf/znxlaoP8KNVR0EMTDBsSWkzUguWN7d+ZylWCoL9OwoOwcbbSNT13ypM+DqF8k1/F5W44ifrLqk+jNKMjbuyc6sSRcR/8Wus6ZTM7nuniUhNpowtmU4ym35Bv/0kW8G5IATUoMf2hseHYpJCPK07q3SrNSoAEc2y7h6cXhTvkJU5Fk2iY+jEmbP2BDDa4cUnbshl1Gc= danny@danny-notebook-ubuntu"
+    ssh-keys = "ubuntu:${file("~/.ssh/id_rsa.pub")}"
   }
 }
 
-resource "yandex_vpc_network" "network-1" {
-  name = "network1"
+resource "yandex_compute_instance" "dev2" {
+
+  name                      = "dev2"
+  allow_stopping_for_update = true
+  platform_id               = "standard-v3"
+  zone                      = "ru-central1-a"
+
+  resources {
+    cores  = "2"
+    memory = "2"
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = "fd8fco5lpqbhanbfg2du" // ubuntu 22.04
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.main_subnet.id
+    nat       = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file("~/.ssh/id_rsa.pub")}"
+  }
 }
 
-resource "yandex_vpc_subnet" "subnet-1" {
-  name           = "subnet1"
+resource "yandex_alb_target_group" "main-target-group" {
+  name           = "maintargetgroup"
+
+  target {
+    subnet_id    = yandex_vpc_subnet.main_subnet.id
+    ip_address   = yandex_compute_instance.dev1.network_interface.0.ip_address
+  }
+
+  target {
+    subnet_id    = yandex_vpc_subnet.main_subnet.id
+    ip_address   = yandex_compute_instance.dev2.network_interface.0.ip_address
+  }
+}
+
+resource "yandex_alb_backend_group" "main-backend-group" {
+  name                     = "mainbackendgroup"
+  session_affinity {
+    connection {
+      source_ip = false
+    }
+  }
+
+  http_backend {
+    name                   = "mainbackend"
+    weight                 = 1
+    port                   = 3000
+    target_group_ids       = [ yandex_alb_target_group.main-target-group.id ]
+    load_balancing_config {
+      panic_threshold      = 90
+    }    
+    healthcheck {
+      timeout              = "10s"
+      interval             = "2s"
+      healthy_threshold    = 10
+      unhealthy_threshold  = 15 
+      http_healthcheck {
+        path               = "/"
+      }
+    }
+  }
+}
+
+resource "yandex_alb_http_router" "main-router" {
+  name          = "mainrouter"
+  labels        = {
+    tf-label    = "tf-label-value"
+    empty-label = ""
+  }
+}
+
+resource "yandex_alb_virtual_host" "main-virtual-host" {
+  name                    = "mainvirtualhost"
+  http_router_id          = yandex_alb_http_router.main-router.id
+  route {
+    name                  = "mainroute"
+    http_route {
+      http_route_action {
+        backend_group_id  = yandex_alb_backend_group.main-backend-group.id
+        timeout           = "60s"
+      }
+    }
+  }
+}   
+
+resource "yandex_alb_load_balancer" "l7-balancer" {
+  name        = "l7balancer"
+  network_id  = yandex_vpc_network.main_network.id
+
+  allocation_policy {
+    location {
+      zone_id   = "ru-central1-a"
+      subnet_id = yandex_vpc_subnet.main_subnet.id
+    }
+  }
+
+  listener {
+    name = "mainlistener"
+    endpoint {
+      address {
+        external_ipv4_address {
+        }
+      }
+      ports = [ 80 ]
+    }
+    http {
+      handler {
+        http_router_id = yandex_alb_http_router.main-router.id
+      }
+    }
+  }
+
+  log_options {
+    discard_rule {
+      http_code_intervals = ["HTTP_2XX", "HTTP_5XX"]
+      discard_percent = 75
+    }
+  }
+}
+
+
+resource "yandex_vpc_network" "main_network" {
+  name = "main_network"
+}
+
+resource "yandex_vpc_subnet" "main_subnet" {
+  name           = "main_subnet"
   zone           = "ru-central1-a"
   v4_cidr_blocks = ["192.168.10.0/24"]
-  network_id     = "${yandex_vpc_network.network-1.id}"
+  network_id     = "${yandex_vpc_network.main_network.id}"
 }
